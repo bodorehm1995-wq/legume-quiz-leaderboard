@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hülsenfrucht-Quiz – Live-Rangliste</title>
+<style>
+  :root {
+    --bg: #0b1020;
+    --card: #131a33;
+    --text: #e6ebff;
+    --muted: #93a2f3;
+    --accent: #6ea8fe;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    padding: 24px 28px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(22px, 3.8vw, 42px);
+    font-weight: 800;
+    letter-spacing: 0.3px;
+  }
+  #updated {
+    font-size: clamp(12px, 2vw, 16px);
+    color: var(--muted);
+  }
+  main {
+    padding: 18px 24px 32px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.35);
+  }
+  thead th {
+    text-align: left;
+    padding: 16px 18px;
+    font-size: clamp(14px, 2.2vw, 18px);
+    color: var(--muted);
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  tbody td {
+    padding: clamp(10px, 1.6vw, 18px);
+    font-size: clamp(16px, 2.8vw, 28px);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  tbody tr:nth-child(1) td { background: rgba(110,168,254,0.10); }
+  tbody tr:nth-child(2) td { background: rgba(110,168,254,0.06); }
+  tbody tr:nth-child(3) td { background: rgba(110,168,254,0.04); }
+  .rank { width: 70px; font-weight: 800; }
+  .name { font-weight: 700; }
+  .score { text-align: right; width: 140px; }
+  .time  { text-align: right; width: 160px; font-variant-numeric: tabular-nums; }
+  footer {
+    color: var(--muted);
+    text-align: center;
+    padding: 16px;
+    font-size: 12px;
+    opacity: 0.8;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Live‑Rangliste</h1>
+    <div id="updated">–</div>
+  </header>
+  <main>
+    <table aria-label="Rangliste">
+      <thead>
+        <tr>
+          <th class="rank">Platz</th>
+          <th>Name</th>
+          <th class="score">Score</th>
+          <th class="time">Zeit (Min:Sek)</th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+        <tr><td colspan="4" style="padding:24px;">Lade Daten …</td></tr>
+      </tbody>
+    </table>
+  </main>
+  <footer>Sortierung: Score absteigend, dann Zeit aufsteigend. Automatische Aktualisierung alle 10 Sekunden.</footer>
+
+<script>
+/**
+ * Mini-Leaderboard: lädt eine veröffentlichte Google‑Sheets‑CSV,
+ * sortiert nach Score ↓ und Zeit (Sekunden) ↑ und rendert eine Tabelle.
+ *
+ * Erwartete Spaltenüberschriften (Groß/Kleinschreibung egal):
+ *  - Name      (z. B. "Name" oder "Participant")
+ *  - Score     (Ganzzahl, z. B. 7, 8, 10)
+ *  - QuizSecs  (Zeit in Sekunden als Zahl)
+ *  - RecordedDate (optional; wird als Tie‑Breaker verwendet)
+ */
+
+// 1) HIER EINTRAGEN: Veröffentlichten CSV‑Link eures Sheets einfügen
+const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR8qkhvVR8SuxkIYby4XL0d9OdcvkJnYbXwZn0--vRPQeGTmQYesHRq7U_nEJQBCzRIdwK-AdvdijeF/pub?output=csv"; // Beispiel: https://docs.google.com/spreadsheets/d/XXXX/pub?gid=0&single=true&output=csv
+
+// 2) Wie viele Einträge anzeigen? (auch per URL‑Parameter ?n=10 überschreibbar)
+const DEFAULT_LIMIT = 20;
+
+// 3) Aktualisierungsintervall in Millisekunden
+const REFRESH_MS = 10000;
+
+// ---- Hilfsfunktionen ----
+function getLimitFromQuery() {
+  const n = Number(new URLSearchParams(location.search).get("n"));
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_LIMIT;
+}
+function fmtSeconds(sec) {
+  const t = Math.round(Number(sec) || 0);
+  const m = Math.floor(t / 60);
+  const s = t % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+// Ein sehr kleiner CSV‑Parser, der Anführungszeichen korrekt behandelt.
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = "", inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i+1] === '"') { field += '"'; i++; }  // escaped quote
+        else { inQuotes = false; }
+      } else {
+        field += c;
+      }
+    } else {
+      if (c === '"') { inQuotes = true; }
+      else if (c === ",") { row.push(field); field = ""; }
+      else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+      else if (c === "\r") { /* ignore CR */ }
+      else { field += c; }
+    }
+  }
+  if (field.length > 0 || inQuotes || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.length && r.join("").trim().length);
+}
+
+function indexByHeader(headers, names) {
+  // findet Index anhand mehrerer möglicher Spaltennamen
+  const lower = headers.map(h => String(h || "").trim().toLowerCase());
+  for (const name of names) {
+    const idx = lower.indexOf(name.toLowerCase());
+    if (idx !== -1) return idx;
+  }
+  return -1;
+}
+
+async function loadAndRender() {
+  const target = document.getElementById("rows");
+  try {
+    const url = CSV_URL + (CSV_URL.includes("?") ? "&" : "?") + "_ts=" + Date.now();
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const txt = await res.text();
+    const data = parseCSV(txt);
+    if (data.length === 0) throw new Error("Keine Daten");
+
+    const headers = data[0];
+    const nameIdx = indexByHeader(headers, ["name", "participant", "teilnehmer", "spitzname"]);
+    const scoreIdx = indexByHeader(headers, ["score", "points", "punktzahl", "totalScore","totalscore"]);
+    const secsIdx  = indexByHeader(headers, ["quizsecs", "time_secs", "zeitsek", "sekunden", "seconds"]);
+    const recIdx   = indexByHeader(headers, ["recordeddate", "enddate", "timestamp"]);
+
+    if (nameIdx === -1 || scoreIdx === -1 || secsIdx === -1) {
+      target.innerHTML = `<tr><td colspan="4" style="color:#ffb4b4;padding:24px;">
+        Fehlende Spalten. Erwartet: <code>Name</code>, <code>Score</code>, <code>QuizSecs</code>.
+      </td></tr>`;
+      return;
+    }
+
+    const rows = data.slice(1).map(r => ({
+      name: (r[nameIdx] || "").trim(),
+      score: Number(r[scoreIdx]) || 0,
+      secs: Number(r[secsIdx]) || 0,
+      recorded: recIdx !== -1 ? new Date(r[recIdx]) : null
+    })).filter(r => r.name);
+
+    rows.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;      // Score absteigend
+      if (a.secs !== b.secs)   return a.secs - b.secs;        // Zeit aufsteigend
+      if (a.recorded && b.recorded) return a.recorded - b.recorded; // Früher zuerst
+      return a.name.localeCompare(b.name, "de");              // stabiler Fallback
+    });
+
+    const limit = getLimitFromQuery();
+    const top = rows.slice(0, limit);
+
+    if (top.length === 0) {
+      target.innerHTML = `<tr><td colspan="4" style="padding:24px;">Noch keine gültigen Einträge.</td></tr>`;
+    } else {
+      target.innerHTML = top.map((r, i) => `
+        <tr>
+          <td class="rank">${i + 1}</td>
+          <td class="name">${r.name}</td>
+          <td class="score">${r.score}</td>
+          <td class="time">${fmtSeconds(r.secs)}</td>
+        </tr>
+      `).join("");
+    }
+
+    document.getElementById("updated").textContent =
+      "Zuletzt aktualisiert: " + new Date().toLocaleTimeString("de-DE");
+  } catch (err) {
+    target.innerHTML = `<tr><td colspan="4" style="color:#ffb4b4;padding:24px;">Fehler beim Laden: ${err.message}</td></tr>`;
+  }
+}
+
+// Initial und periodisch laden
+loadAndRender();
+setInterval(loadAndRender, REFRESH_MS);
+</script>
+</body>
+</html>
